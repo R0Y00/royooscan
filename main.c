@@ -3,222 +3,207 @@
 #include <string.h>
 #include <winsock2.h>
 #include <windows.h>
-#include <stdbool.h>
+#include <pthread.h>
 
-#pragma comment(lib, "ws2_32.lib") // Winsock 库链接
+#pragma comment(lib, "ws2_32.lib")
 
-#define MAX_PORT 65535       // 最大端口号
-#define TIMEOUT 20           // 超时时间（毫秒）
-#define BATCH_SIZE 500       // 每个线程扫描的端口数量
+#define MAX_THREADS 1000  // 最大线程数
+#define TIMEOUT 100       // 超时时间（毫秒）
 
 typedef struct {
-    long *data;      // 动态数组存储队列数据
-    int front;       // 队列头索引
-    int rear;        // 队列尾索引
-    int capacity;    // 队列容量
-    int size;        // 当前队列大小
-} Queue;
+    char ip[16];
+    int port;
+    int protocol; // 0 = TCP, 1 = UDP
+} ScanTask;
 
-// 队列函数实现
-Queue* create_queue(int capacity) {
-    Queue *queue = (Queue *)malloc(sizeof(Queue));
-    queue->data = (long *)malloc(capacity * sizeof(long));
-    queue->front = 0;
-    queue->rear = -1;
-    queue->capacity = capacity;
-    queue->size = 0;
-    return queue;
-}
+typedef struct {
+    int total_ports;
+    int open_ports;
+} ScanResult;
 
-int is_empty(Queue *queue) {
-    return queue->size == 0;
-}
-
-int is_full(Queue *queue) {
-    return queue->size == queue->capacity;
-}
-
-void enqueue(Queue *queue, long value) {
-    if (is_full(queue)) return;
-    queue->rear = (queue->rear + 1) % queue->capacity;
-    queue->data[queue->rear] = value;
-    queue->size++;
-}
-
-long dequeue(Queue *queue) {
-    if (is_empty(queue)) return -1;
-    long value = queue->data[queue->front];
-    queue->front = (queue->front + 1) % queue->capacity;
-    queue->size--;
-    return value;
-}
-
-void free_queue(Queue *queue) {
-    free(queue->data);
-    free(queue);
-}
-
-// 全局变量和锁
-volatile long current_port = 1;  // 当前扫描的端口号
-char target_ip[16];              // 目标 IP 地址
-int open_ports[MAX_PORT] = {0};  // 0 表示关闭，1 表示开放
-CRITICAL_SECTION queue_lock;     // 队列锁
-CRITICAL_SECTION open_ports_lock; // 用于保护 open_ports 的锁
-
-Queue *port_queue; // 队列存储需要扫描的端口
+pthread_mutex_t result_mutex;  // 结果统计的互斥锁
+ScanResult scan_result = {0, 0};
 
 // 扫描 TCP 端口
-void scan_tcp(long port) {
-    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == INVALID_SOCKET) return;
+void *scan_tcp_port(void *arg) {
+    ScanTask *task = (ScanTask *)arg;
+    SOCKET sock;
+    struct sockaddr_in server;
+    int result;
 
+    // 创建 TCP 套接字
+    sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET) {
+        fprintf(stderr, "TCP socket creation failed.\n");
+        pthread_exit(NULL);
+    }
+
+    // 设置非阻塞模式
     u_long mode = 1;
     ioctlsocket(sock, FIONBIO, &mode);
 
-    struct sockaddr_in target;
-    memset(&target, 0, sizeof(target));
-    target.sin_family = AF_INET;
-    target.sin_port = htons(port);
-    target.sin_addr.s_addr = inet_addr(target_ip);
+    server.sin_family = AF_INET;
+    server.sin_port = htons(task->port);
+    server.sin_addr.s_addr = inet_addr(task->ip);
 
-    connect(sock, (struct sockaddr*)&target, sizeof(target));
+    // 尝试连接
+    connect(sock, (struct sockaddr *)&server, sizeof(server));
 
-    fd_set write_fds;
-    struct timeval timeout;
-    FD_ZERO(&write_fds);
-    FD_SET(sock, &write_fds);
-    timeout.tv_sec = 0;
-    timeout.tv_usec = TIMEOUT * 1000;
+    // 使用 select 检查连接状态
+    fd_set writefds;
+    struct timeval tv;
+    FD_ZERO(&writefds);
+    FD_SET(sock, &writefds);
 
-    if (select(0, NULL, &write_fds, NULL, &timeout) > 0) {
-        EnterCriticalSection(&open_ports_lock);
-        open_ports[port] = 1;
-        LeaveCriticalSection(&open_ports_lock);
+    tv.tv_sec = 0;
+    tv.tv_usec = TIMEOUT * 1000;
+
+    result = select(0, NULL, &writefds, NULL, &tv);
+
+    pthread_mutex_lock(&result_mutex);
+    scan_result.total_ports++;
+    if (result > 0 && FD_ISSET(sock, &writefds)) {
+        printf("[TCP] %s:%d is open.\n", task->ip, task->port);
+        scan_result.open_ports++;
     }
+    pthread_mutex_unlock(&result_mutex);
 
     closesocket(sock);
+    free(task);
+    pthread_exit(NULL);
 }
 
 // 扫描 UDP 端口
-void scan_udp(long port) {
-    SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock == INVALID_SOCKET) return;
+void *scan_udp_port(void *arg) {
+    ScanTask *task = (ScanTask *)arg;
+    SOCKET sock;
+    struct sockaddr_in server;
+    int result;
+    char buffer[1024] = {0};
+    char test_message[] = "UDP Test"; // 用于测试的消息
 
-    struct sockaddr_in target;
-    memset(&target, 0, sizeof(target));
-    target.sin_family = AF_INET;
-    target.sin_port = htons(port);
-    target.sin_addr.s_addr = inet_addr(target_ip);
-
-    char send_data[] = "Hello"; // 任意 UDP 数据
-    sendto(sock, send_data, sizeof(send_data), 0, (struct sockaddr*)&target, sizeof(target));
-
-    fd_set read_fds;
-    struct timeval timeout;
-    FD_ZERO(&read_fds);
-    FD_SET(sock, &read_fds);
-    timeout.tv_sec = 0;
-    timeout.tv_usec = TIMEOUT * 1000;
-
-    if (select(0, &read_fds, NULL, NULL, &timeout) > 0) {
-        EnterCriticalSection(&open_ports_lock);
-        open_ports[port] = 1;
-        LeaveCriticalSection(&open_ports_lock);
+    // 创建 UDP 套接字
+    sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) {
+        fprintf(stderr, "UDP socket creation failed.\n");
+        pthread_exit(NULL);
     }
+
+    server.sin_family = AF_INET;
+    server.sin_port = htons(task->port);
+    server.sin_addr.s_addr = inet_addr(task->ip);
+
+    // 发送测试消息
+    sendto(sock, test_message, sizeof(test_message), 0, (struct sockaddr *)&server, sizeof(server));
+
+    // 设置非阻塞模式
+    fd_set readfds;
+    struct timeval tv;
+    FD_ZERO(&readfds);
+    FD_SET(sock, &readfds);
+
+    tv.tv_sec = 0;
+    tv.tv_usec = TIMEOUT * 1000;
+
+    result = select(0, &readfds, NULL, NULL, &tv);
+
+    pthread_mutex_lock(&result_mutex);
+    scan_result.total_ports++;
+    if (result > 0 && FD_ISSET(sock, &readfds)) {
+        printf("[UDP] %s:%d is open.\n", task->ip, task->port);
+        scan_result.open_ports++;
+    }
+    pthread_mutex_unlock(&result_mutex);
 
     closesocket(sock);
+    free(task);
+    pthread_exit(NULL);
 }
 
-DWORD WINAPI scan_port_pool(LPVOID arg) {
-    bool is_udp = *((bool*)arg);
+void start_scan(const char *ip, int start_port, int end_port, int protocol) {
+    pthread_t threads[MAX_THREADS];
+    int thread_count = 0;
 
-    while (true) {
-        long port;
-
-        // 从队列中获取一个端口
-        EnterCriticalSection(&queue_lock);
-        if (is_empty(port_queue)) {
-            LeaveCriticalSection(&queue_lock);
+    for (int port = start_port; port <= end_port; ++port) {
+        ScanTask *task = (ScanTask *)malloc(sizeof(ScanTask));
+        if (!task) {
+            fprintf(stderr, "Memory allocation failed.\n");
             break;
         }
-        port = dequeue(port_queue);
-        LeaveCriticalSection(&queue_lock);
 
-        // 根据扫描类型选择 TCP 或 UDP
-        if (is_udp) {
-            scan_udp(port);
-        } else {
-            scan_tcp(port);
+        strncpy(task->ip, ip, 15);
+        task->ip[15] = '\0';
+        task->port = port;
+        task->protocol = protocol;
+
+        if (protocol == 0) { // TCP
+            if (pthread_create(&threads[thread_count], NULL, scan_tcp_port, task) != 0) {
+                fprintf(stderr, "TCP thread creation failed for port %d.\n", port);
+                free(task);
+                continue;
+            }
+        } else { // UDP
+            if (pthread_create(&threads[thread_count], NULL, scan_udp_port, task) != 0) {
+                fprintf(stderr, "UDP thread creation failed for port %d.\n", port);
+                free(task);
+                continue;
+            }
+        }
+
+        thread_count++;
+
+        // 限制线程数量
+        if (thread_count >= MAX_THREADS) {
+            for (int i = 0; i < thread_count; ++i) {
+                pthread_join(threads[i], NULL);
+            }
+            thread_count = 0;
         }
     }
-    return 0;
+
+    // 等待所有线程结束
+    for (int i = 0; i < thread_count; ++i) {
+        pthread_join(threads[i], NULL);
+    }
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 4) {
-        printf("Usage: %s <IP> <threads> <tcp|udp>\n", argv[0]);
+    if (argc < 5) {
+        printf("Usage: %s <IP> <start_port> <end_port> <protocol (tcp/udp)>\n", argv[0]);
         return 1;
     }
 
-    // 获取目标 IP 和线程数
-    strncpy(target_ip, argv[1], 16);
-    int thread_count = atoi(argv[2]);
-    bool is_udp = strcmp(argv[3], "udp") == 0;
-
-    if (thread_count < 1 || thread_count > 1000) {
-        printf("Thread count must be between 1 and 1000.\n");
-        return 1;
-    }
-
-    // 初始化 Winsock
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        printf("Failed to initialize Winsock: %d\n", WSAGetLastError());
+        fprintf(stderr, "WSAStartup failed.\n");
         return 1;
     }
 
-    // 初始化锁
-    InitializeCriticalSection(&queue_lock);
-    InitializeCriticalSection(&open_ports_lock);
+    const char *ip = argv[1];
+    int start_port = atoi(argv[2]);
+    int end_port = atoi(argv[3]);
+    const char *protocol = argv[4];
 
-    // 初始化任务队列
-    port_queue = create_queue(MAX_PORT);
-    for (long port = 1; port <= MAX_PORT; port++) {
-        enqueue(port_queue, port);
+    if (start_port <= 0 || end_port <= 0 || start_port > end_port) {
+        fprintf(stderr, "Invalid port range.\n");
+        return 1;
     }
 
-    // 创建线程池
-    HANDLE *threads = (HANDLE *)malloc(thread_count * sizeof(HANDLE));
-    for (int i = 0; i < thread_count; i++) {
-        threads[i] = CreateThread(NULL, 0, scan_port_pool, &is_udp, 0, NULL);
-        if (threads[i] == NULL) {
-            printf("Failed to create thread %d, error code: %lu\n", i, GetLastError());
-        }
+    if (strcmp(protocol, "tcp") == 0) {
+        printf("Starting TCP scan on %s from port %d to %d...\n", ip, start_port, end_port);
+        start_scan(ip, start_port, end_port, 0);
+    } else if (strcmp(protocol, "udp") == 0) {
+        printf("Starting UDP scan on %s from port %d to %d...\n", ip, start_port, end_port);
+        start_scan(ip, start_port, end_port, 1);
+    } else {
+        fprintf(stderr, "Invalid protocol. Use 'tcp' or 'udp'.\n");
+        return 1;
     }
 
-    // 等待所有线程完成
-    WaitForMultipleObjects(thread_count, threads, TRUE, INFINITE);
+    printf("\nScan completed.\n");
+    printf("Scanned %d ports.\n", scan_result.total_ports);
+    printf("%d ports are open.\n", scan_result.open_ports);
 
-    // 打印开放端口
-    printf("Scan complete. Open ports:\n");
-    int open_count = 0;
-    for (int i = 1; i <= MAX_PORT; i++) {
-        if (open_ports[i]) {
-            open_count++;
-            printf("Port %d is open\n", i);
-        }
-    }
-    printf("Total open ports: %d\n", open_count);
-
-    // 释放资源
-    for (int i = 0; i < thread_count; i++) {
-        CloseHandle(threads[i]);
-    }
-    free(threads);
-    free_queue(port_queue);
-    DeleteCriticalSection(&queue_lock);
-    DeleteCriticalSection(&open_ports_lock);
     WSACleanup();
-
     return 0;
 }
