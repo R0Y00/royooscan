@@ -6,14 +6,14 @@
 
 ### 项目简介
 
-本项目是一个高性能的端口扫描器，使用 **C语言** 编写，支持多种 IP 表达式，包括单个 IP、IP 范围和 CIDR 表达式（如 `192.168.1.0/24`）。该工具利用多线程和非阻塞套接字技术实现了高效、快速的端口扫描。适用于需要快速检测目标主机开放端口的场景。
+本项目是一个简单的端口扫描器，使用 **C语言** 编写，支持多种 IP 表达式，包括单个 IP、IP 范围和 CIDR 表达式（如 `192.168.1.0/24`）。该工具利用多线程和非阻塞套接字技术实现了高效、快速的端口扫描。适用于需要快速检测目标主机开放端口的场景。
 
 ### 功能特点
 1. **多种 IP 表达式支持**：
     - 单个 IP（如 `192.168.1.1`）。
     - IP 范围（如 `192.168.1.1-192.168.1.10`）。
     - CIDR 表达式（如 `192.168.1.0/24`）。
-2. **高性能**：
+2. **性能**：
     - 使用多线程加速扫描，支持高并发。
     - 非阻塞 I/O，减少连接超时时间。
 3. **扫描统计**：
@@ -66,14 +66,14 @@ Scanned 25600 ports across 256 IPs in 5.25 seconds.
 
 ### Project Overview
 
-This project is a high-performance port scanner written in **C language**. It supports multiple IP address formats, including single IPs, IP ranges, and CIDR expressions (e.g., `192.168.1.0/24`). The scanner leverages multi-threading and non-blocking socket techniques to achieve efficient and fast port scanning. It is suitable for scenarios requiring quick detection of open ports on target hosts.
+This project is a simple port scanner written in **C language**. It supports multiple IP address formats, including single IPs, IP ranges, and CIDR expressions (e.g., `192.168.1.0/24`). The scanner leverages multi-threading and non-blocking socket techniques to achieve efficient and fast port scanning. It is suitable for scenarios requiring quick detection of open ports on target hosts.
 
 ### Features
 1. **Support for Multiple IP Formats**:
     - Single IP (e.g., `192.168.1.1`).
     - IP range (e.g., `192.168.1.1-192.168.1.10`).
     - CIDR expression (e.g., `192.168.1.0/24`).
-2. **High Performance**:
+2. **Performance**:
     - Accelerated scanning with multi-threading and high concurrency.
     - Non-blocking I/O to reduce connection timeout delays.
 3. **Scan Statistics**:
