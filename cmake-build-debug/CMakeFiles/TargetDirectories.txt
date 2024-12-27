@@ -1,0 +1,3 @@
+D:/Clionproject/royooscan/cmake-build-debug/CMakeFiles/royooscan.dir
+D:/Clionproject/royooscan/cmake-build-debug/CMakeFiles/edit_cache.dir
+D:/Clionproject/royooscan/cmake-build-debug/CMakeFiles/rebuild_cache.dir
