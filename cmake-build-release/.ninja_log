@@ -1,3 +1,5 @@
 # ninja log v6
 1	671	7570215512885285	CMakeFiles/royooscan.dir/main.c.obj	99b357f4c05e1aab
 673	856	7570215519615128	royooscan.exe	15c73627ddd353c1
+3	769	7570232406367632	CMakeFiles/royooscan.dir/main.c.obj	99b357f4c05e1aab
+769	870	7570232414030272	royooscan.exe	15c73627ddd353c1
