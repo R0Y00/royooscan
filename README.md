@@ -32,12 +32,12 @@ gcc -o royooscan.exe fast_scanner.c -lws2_32 -lpthread
 #### 2. 运行
 运行程序时，输入 IP 表达式、起始端口和结束端口。例如：
 ```bash
-royooscan.exe <IP或范围> <起始端口> <结束端口>
+royooscan.exe <IP或范围> <起始端口> <结束端口> <udp/tcp>
 ```
 
 **示例**：
 ```bash
-royooscan.exe 192.168.1.0/24 1 100
+royooscan.exe 192.168.1.0/24 1 100 tcp
 ```
 
 #### 3. 输出示例
@@ -92,12 +92,12 @@ gcc -o royooscan.exe fast_scanner.c -lws2_32 -lpthread
 #### 2. Execution
 Run the program with the IP expression, starting port, and ending port as arguments. For example:
 ```bash
-royooscan.exe <IP or range> <start_port> <end_port>
+royooscan.exe <IP or range> <start_port> <end_port> <udp/tcp>
 ```
 
 **Example**:
 ```bash
-royooscan.exe 192.168.1.0/24 1 100
+royooscan.exe 192.168.1.0/24 1 100 tcp
 ```
 
 #### 3. Output Example
