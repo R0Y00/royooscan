@@ -2,8 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <winsock2.h>
-#include <windows.h>
 #include <pthread.h>
+#include <stdint.h>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -24,6 +24,61 @@ typedef struct {
 pthread_mutex_t result_mutex;  // 结果统计的互斥锁
 ScanResult scan_result = {0, 0};
 
+// 解析 CIDR 表达式为 IP 范围
+void parse_cidr(const char *cidr, char **ips, int *ip_count) {
+    unsigned int ip, mask, start, end;
+    sscanf(cidr, "%d.%d.%d.%d/%d",
+           (int *)&((uint8_t *)&ip)[0],
+           (int *)&((uint8_t *)&ip)[1],
+           (int *)&((uint8_t *)&ip)[2],
+           (int *)&((uint8_t *)&ip)[3],
+           (int *)&mask);
+
+    ip = ntohl(ip); // 转换为主机字节序
+    mask = (1 << (32 - mask)) - 1;
+    start = ip & ~mask;
+    end = ip | mask;
+
+    *ip_count = 0;
+    for (unsigned int addr = start; addr <= end; addr++) {
+        struct in_addr in;
+        in.s_addr = htonl(addr);
+        strncpy(ips[*ip_count], inet_ntoa(in), 15);
+        ips[*ip_count][15] = '\0';
+        (*ip_count)++;
+    }
+}
+
+// 解析范围 IP 表达式
+void parse_ip_range(const char *ip_range, char **ips, int *ip_count) {
+    char start_ip[16], end_ip[16];
+    unsigned int start[4], end[4];
+    *ip_count = 0;
+
+    if (strchr(ip_range, '-') != NULL) {
+        sscanf(ip_range, "%15[^-]-%15s", start_ip, end_ip);
+        sscanf(start_ip, "%u.%u.%u.%u", &start[0], &start[1], &start[2], &start[3]);
+        sscanf(end_ip, "%u.%u.%u.%u", &end[0], &end[1], &end[2], &end[3]);
+
+        for (unsigned int a = start[0]; a <= end[0]; a++) {
+            for (unsigned int b = start[1]; b <= end[1]; b++) {
+                for (unsigned int c = start[2]; c <= end[2]; c++) {
+                    for (unsigned int d = start[3]; d <= end[3]; d++) {
+                        sprintf(ips[*ip_count], "%u.%u.%u.%u", a, b, c, d);
+                        (*ip_count)++;
+                    }
+                }
+            }
+        }
+    } else if (strchr(ip_range, '/') != NULL) {
+        parse_cidr(ip_range, ips, ip_count);
+    } else {
+        strncpy(ips[*ip_count], ip_range, 15);
+        ips[*ip_count][15] = '\0';
+        (*ip_count)++;
+    }
+}
+
 // 扫描 TCP 端口
 void *scan_tcp_port(void *arg) {
     ScanTask *task = (ScanTask *)arg;
@@ -31,14 +86,11 @@ void *scan_tcp_port(void *arg) {
     struct sockaddr_in server;
     int result;
 
-    // 创建 TCP 套接字
     sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == INVALID_SOCKET) {
-        fprintf(stderr, "TCP socket creation failed.\n");
         pthread_exit(NULL);
     }
 
-    // 设置非阻塞模式
     u_long mode = 1;
     ioctlsocket(sock, FIONBIO, &mode);
 
@@ -46,10 +98,8 @@ void *scan_tcp_port(void *arg) {
     server.sin_port = htons(task->port);
     server.sin_addr.s_addr = inet_addr(task->ip);
 
-    // 尝试连接
     connect(sock, (struct sockaddr *)&server, sizeof(server));
 
-    // 使用 select 检查连接状态
     fd_set writefds;
     struct timeval tv;
     FD_ZERO(&writefds);
@@ -80,12 +130,10 @@ void *scan_udp_port(void *arg) {
     struct sockaddr_in server;
     int result;
     char buffer[1024] = {0};
-    char test_message[] = "UDP Test"; // 用于测试的消息
+    char test_message[] = "UDP Test";
 
-    // 创建 UDP 套接字
     sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) {
-        fprintf(stderr, "UDP socket creation failed.\n");
         pthread_exit(NULL);
     }
 
@@ -93,10 +141,8 @@ void *scan_udp_port(void *arg) {
     server.sin_port = htons(task->port);
     server.sin_addr.s_addr = inet_addr(task->ip);
 
-    // 发送测试消息
     sendto(sock, test_message, sizeof(test_message), 0, (struct sockaddr *)&server, sizeof(server));
 
-    // 设置非阻塞模式
     fd_set readfds;
     struct timeval tv;
     FD_ZERO(&readfds);
@@ -127,7 +173,6 @@ void start_scan(const char *ip, int start_port, int end_port, int protocol) {
     for (int port = start_port; port <= end_port; ++port) {
         ScanTask *task = (ScanTask *)malloc(sizeof(ScanTask));
         if (!task) {
-            fprintf(stderr, "Memory allocation failed.\n");
             break;
         }
 
@@ -136,23 +181,13 @@ void start_scan(const char *ip, int start_port, int end_port, int protocol) {
         task->port = port;
         task->protocol = protocol;
 
-        if (protocol == 0) { // TCP
-            if (pthread_create(&threads[thread_count], NULL, scan_tcp_port, task) != 0) {
-                fprintf(stderr, "TCP thread creation failed for port %d.\n", port);
-                free(task);
-                continue;
-            }
-        } else { // UDP
-            if (pthread_create(&threads[thread_count], NULL, scan_udp_port, task) != 0) {
-                fprintf(stderr, "UDP thread creation failed for port %d.\n", port);
-                free(task);
-                continue;
-            }
+        if (protocol == 0) {
+            pthread_create(&threads[thread_count], NULL, scan_tcp_port, task);
+        } else {
+            pthread_create(&threads[thread_count], NULL, scan_udp_port, task);
         }
 
         thread_count++;
-
-        // 限制线程数量
         if (thread_count >= MAX_THREADS) {
             for (int i = 0; i < thread_count; ++i) {
                 pthread_join(threads[i], NULL);
@@ -161,7 +196,6 @@ void start_scan(const char *ip, int start_port, int end_port, int protocol) {
         }
     }
 
-    // 等待所有线程结束
     for (int i = 0; i < thread_count; ++i) {
         pthread_join(threads[i], NULL);
     }
@@ -169,40 +203,35 @@ void start_scan(const char *ip, int start_port, int end_port, int protocol) {
 
 int main(int argc, char *argv[]) {
     if (argc < 5) {
-        printf("Usage: %s <IP> <start_port> <end_port> <protocol (tcp/udp)>\n", argv[0]);
+        printf("Usage: %s <IP or range> <start_port> <end_port> <protocol (tcp/udp)>\n", argv[0]);
         return 1;
     }
 
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        fprintf(stderr, "WSAStartup failed.\n");
         return 1;
     }
 
-    const char *ip = argv[1];
+    const char *ip_range = argv[1];
     int start_port = atoi(argv[2]);
     int end_port = atoi(argv[3]);
     const char *protocol = argv[4];
 
-    if (start_port <= 0 || end_port <= 0 || start_port > end_port) {
-        fprintf(stderr, "Invalid port range.\n");
-        return 1;
+    char *ips[65536];
+    for (int i = 0; i < 65536; i++) {
+        ips[i] = (char *)malloc(16);
+    }
+    int ip_count = 0;
+    parse_ip_range(ip_range, ips, &ip_count);
+
+    int protocol_flag = strcmp(protocol, "udp") == 0 ? 1 : 0;
+    for (int i = 0; i < ip_count; i++) {
+        start_scan(ips[i], start_port, end_port, protocol_flag);
     }
 
-    if (strcmp(protocol, "tcp") == 0) {
-        printf("Starting TCP scan on %s from port %d to %d...\n", ip, start_port, end_port);
-        start_scan(ip, start_port, end_port, 0);
-    } else if (strcmp(protocol, "udp") == 0) {
-        printf("Starting UDP scan on %s from port %d to %d...\n", ip, start_port, end_port);
-        start_scan(ip, start_port, end_port, 1);
-    } else {
-        fprintf(stderr, "Invalid protocol. Use 'tcp' or 'udp'.\n");
-        return 1;
+    for (int i = 0; i < 65536; i++) {
+        free(ips[i]);
     }
-
-    printf("\nScan completed.\n");
-    printf("Scanned %d ports.\n", scan_result.total_ports);
-    printf("%d ports are open.\n", scan_result.open_ports);
 
     WSACleanup();
     return 0;
